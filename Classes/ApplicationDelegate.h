@@ -17,7 +17,9 @@
 	SecKeychainRef keychain;
 	SecCertificateRef certificate;
 	SecIdentityRef identity;
+    NSWindow* window;
 }
+@property (nonatomic, retain) IBOutlet NSWindow* window;
 #pragma mark IBAction
 - (IBAction)push:(id)sender;
 @end

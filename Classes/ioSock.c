@@ -288,7 +288,7 @@ OSStatus AcceptClientConnection(
 {  
 	struct sockaddr_in  addr;
 	int					sock;
-    int                 len;
+    socklen_t           len;
 	
     len = sizeof(struct sockaddr_in);
     sock = accept((int)listenSock, (struct sockaddr *) &addr, &len);
@@ -325,12 +325,12 @@ OSStatus SocketRead(
 	 									 * RETURNED */
 	size_t 				*dataLength)	/* IN/OUT */ 
 {
-	UInt32			bytesToGo = *dataLength;
-	UInt32 			initLen = bytesToGo;
+	size_t			bytesToGo = *dataLength;
+	size_t 			initLen = bytesToGo;
 	UInt8			*currData = (UInt8 *)data;
 	int				sock = (int)connection;
 	OSStatus		rtn = noErr;
-	UInt32			bytesRead;
+	size_t			bytesRead;
 	int				rrtn;
 	
 	*dataLength = 0;
@@ -403,17 +403,17 @@ OSStatus SocketWrite(
 	const void	 		*data, 
 	size_t 				*dataLength)	/* IN/OUT */ 
 {
-	UInt32		bytesSent = 0;
+	size_t		bytesSent = 0;
 	int			sock = (int)connection;
 	int 		length;
-	UInt32		dataLen = *dataLength;
+	size_t		dataLen = *dataLength;
 	const UInt8 *dataPtr = (UInt8 *)data;
 	OSStatus	ortn;
 	
 	if(oneAtATime && (*dataLength > 1)) {
-		UInt32 i;
-		UInt32 outLen;
-		UInt32 thisMove;
+		size_t i;
+		size_t outLen;
+		size_t thisMove;
 		
 		outLen = 0;
 		for(i=0; i<dataLen; i++) {

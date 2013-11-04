@@ -9,137 +9,164 @@
 
 #import "ApplicationDelegate.h"
 
-// apple gateway must be production if using a production certificate, else if using a developer certificate, then use sandbox
-#define kApplePushGateway "gateway.push.apple.com" //"gateway.sandbox.push.apple.com"
 
-// Device token should be 32 bytes
-// The push text box requires there to be spaces in the token between every 8 characters.  There is code to check and fix this at runtime.
-#define kDeviceToken @"1111111122222222aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff"
-
-// name the cert to whatever you want.  Make sure the cert is bundled with app (check the Copy Bundle Resources build phase)
-// cert should be of extension ".cer"  and should NOT contain the private key, just the cert by itself.
-#define kPushCertificate @"Push_Notification_Certificate_Production.cer"
-
-@interface ApplicationDelegate ()
-#pragma mark Properties
-@property(nonatomic, retain) NSString *deviceToken, *payload, *certificate;
-#pragma mark Private
-- (void)connect;
-- (void)disconnect;
-@end
+NSString* const kAPNSListKey = @"apns_list";
+const NSUInteger kPayloadSizeLimit = 256;
 
 @implementation ApplicationDelegate
+#pragma mark Properties
+
 @synthesize window;
+@synthesize previewText;
+@synthesize previewWindow;
+@synthesize payloadCountText;
+@synthesize apnsTableView;
+
+@synthesize apnsList;
+@synthesize currentNotification;
 
 #pragma mark Allocation
 
-- (id)init {
-	self = [super init];
-	if(self != nil) {
-		self.deviceToken = kDeviceToken;
-		self.payload = @"{\"aps\":{\"alert\":\"This is some fancy message.\",\"badge\":1,\"sound\" : \"bingbong.aiff\"}}";
-        NSString* certificateName = kPushCertificate;
-		self.certificate = [[NSBundle mainBundle] pathForResource:[certificateName stringByDeletingPathExtension] ofType:[certificateName pathExtension]];
-	}
-	return self;
+- (void) loadAPNSList {
+    apnsList = [NSMutableArray new];
+    NSArray* data = [[NSUserDefaults standardUserDefaults] objectForKey:kAPNSListKey];
+    if (data == nil)
+        return;
+    for (NSDictionary* d in data) {
+        APNSModel* m = [[APNSModel alloc] initWithDictionary:d];
+        [apnsList addObject:m];
+        [m release];
+    }
+}
+
+- (id) init {
+    if ((self = [super init])) {
+        [self initNewNotification];
+        [self loadAPNSList];
+    }
+    return self;
 }
 
 - (void)dealloc {
-	
 	// Release objects.
-	self.deviceToken = nil;
-	self.payload = nil;
-	self.certificate = nil;
-	
+	self.currentNotification = nil;
+    self.apnsList = nil;
 	// Call super.
 	[super dealloc];
-	
 }
-
-
-#pragma mark Properties
-
-@synthesize deviceToken = _deviceToken;
-@synthesize payload = _payload;
-@synthesize certificate = _certificate;
 
 #pragma mark Inherent
-
-- (void)applicationDidFinishLaunching:(NSNotification *)notification {
-	[self connect];
-}
-
-- (void)applicationWillTerminate:(NSNotification *)notification {
-	[self disconnect];
-}
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)application {
 	return YES;
 }
 
+- (void) applicationDidFinishLaunching:(NSNotification *)notification {
+    [NSTimer scheduledTimerWithTimeInterval:2 target:self selector:@selector(updatePayloadPreview) userInfo:nil repeats:YES];
+}
+
 #pragma mark Private
 
-- (void)connect {
-	
-	if(self.certificate == nil) {
-		return;
-	}
-	
+- (void) initNewNotification {
+    self.currentNotification = [APNSModel new];
+}
+
+- (void) updatePayloadPreview {
+    NSUInteger length = self.currentNotification.payload.length;
+    if (length > kPayloadSizeLimit)
+        self.payloadCountText.textColor = [NSColor redColor];
+    else
+        self.payloadCountText.textColor = [NSColor whiteColor];
+    [self.payloadCountText setIntegerValue:length];
+    [self.previewText setStringValue:self.currentNotification.prettyPayload];
+}
+
+- (void) displayMessage:(NSString*)message {
+    NSLog(@"%@", message);
+    NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+    [alert setMessageText:message];
+    [alert beginSheetModalForWindow:window
+                      modalDelegate:self
+                     didEndSelector:nil
+                        contextInfo:nil];
+}
+
+- (BOOL) checkFormData {
+    NSString* message = nil;
+    if (self.currentNotification.deviceToken == nil || [self.currentNotification.deviceToken isEqualToString:@""])
+        message = @"Enter your device token";
+    else if (![[NSFileManager defaultManager] fileExistsAtPath:self.currentNotification.cerPath])
+        message = @"APNS Certificate not found";
+    else if (self.currentNotification.cerPath == nil || [self.currentNotification.cerPath isEqualToString:@""])
+        message = @"you need the APNS Certificate for the app to work";
+
+    if (message == nil)
+        return YES;
+
+    [self displayMessage:message];
+    return NO;
+}
+
+- (BOOL) connect {
 	// Define result variable.
 	OSStatus result;
-	
+
 	// Establish connection to server.
 	PeerSpec peer;
-	result = MakeServerConnection(kApplePushGateway, 2195, &socket, &peer); NSLog(@"MakeServerConnection(): [%s]- %@", (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
-	
+	result = MakeServerConnection([self.currentNotification.applePushServer UTF8String], 2195, &socket, &peer);
+    NSLog(@"MakeServerConnection(): [%s]- %s", (char *)GetMacOSStatusErrorString(result), (char *)GetMacOSStatusCommentString(result));
+
 	// Create new SSL context.
-	result = SSLNewContext(false, &context); NSLog(@"SSLNewContext(): [%s]- %@", (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
-	
+	result = SSLNewContext(false, &context);
+    NSLog(@"SSLNewContext(): [%s]- %s", (char *)GetMacOSStatusErrorString(result), (char *)GetMacOSStatusCommentString(result));
+
 	// Set callback functions for SSL context.
-	result = SSLSetIOFuncs(context, SocketRead, SocketWrite); NSLog(@"SSLSetIOFuncs(): [%s]- %@", (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
-	
+	result = SSLSetIOFuncs(context, SocketRead, SocketWrite);
+    NSLog(@"SSLSetIOFuncs(): [%s]- %s", (char *)GetMacOSStatusErrorString(result), (char *)GetMacOSStatusCommentString(result));
+
 	// Set SSL context connection.
-	result = SSLSetConnection(context, socket); NSLog(@"SSLSetConnection(): [%s]- %@", (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
-	
+	result = SSLSetConnection(context, socket);
+    NSLog(@"SSLSetConnection(): [%s]- %s", (char *)GetMacOSStatusErrorString(result), (char *)GetMacOSStatusCommentString(result));
+
 	// Set server domain name.
-	result = SSLSetPeerDomainName(context, kApplePushGateway, [[NSString stringWithUTF8String:kApplePushGateway] length]); NSLog(@"SSLSetPeerDomainName(): [%s]- %@", (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
+	result = SSLSetPeerDomainName(context, [self.currentNotification.applePushServer UTF8String], [self.currentNotification.applePushServer length]);
+    NSLog(@"SSLSetPeerDomainName(): [%s]- %s", (char *)GetMacOSStatusErrorString(result), (char *)GetMacOSStatusCommentString(result));
 
 	// Open keychain.
-	result = SecKeychainCopyDefault(&keychain); NSLog(@"SecKeychainOpen(): [%s]- %@", (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
-	
+	result = SecKeychainCopyDefault(&keychain);
+    NSLog(@"SecKeychainOpen(): [%s]- %s", (char *)GetMacOSStatusErrorString(result), (char *)GetMacOSStatusCommentString(result));
+
 	// Create certificate.
-	NSData *certificateData = [NSData dataWithContentsOfFile:self.certificate];
-	CSSM_DATA data;
-	data.Data = (uint8 *)[certificateData bytes];
-	data.Length = [certificateData length];
-	result = SecCertificateCreateFromData(&data, CSSM_CERT_X_509v3, CSSM_CERT_ENCODING_BER, &certificate); NSLog(@"SecCertificateCreateFromData(): [%s]- %@", (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
+	NSData *certificateData = [NSData dataWithContentsOfFile:self.currentNotification.cerPath];
+    certificate = SecCertificateCreateWithData(NULL, (CFDataRef)certificateData);
+    NSLog(@"SecCertificateCreateFromData(): [%s]- %s", (char *)GetMacOSStatusErrorString(result), (char *)GetMacOSStatusCommentString(result));
 	
 	// Create identity.
-	result = SecIdentityCreateWithCertificate(keychain, certificate, &identity); NSLog(@"SecIdentityCreateWithCertificate(): %d [%s]- %@", result, (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
+	result = SecIdentityCreateWithCertificate(keychain, certificate, &identity);
+    NSLog(@"SecIdentityCreateWithCertificate(): %d [%s]- %s", result, (char *)GetMacOSStatusErrorString(result), (char *)GetMacOSStatusCommentString(result));
 	
 	// Set client certificate.
 	CFArrayRef certificates = CFArrayCreate(NULL, (const void **)&identity, 1, NULL);
-	result = SSLSetCertificate(context, certificates); NSLog(@"SSLSetCertificate(): [%s]- %@", (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
+	result = SSLSetCertificate(context, certificates);
+    NSLog(@"SSLSetCertificate(): [%s]- %s", (char *)GetMacOSStatusErrorString(result), (char *)GetMacOSStatusCommentString(result));
 	CFRelease(certificates);
 	
 	// Perform SSL handshake.
 	do {
-		result = SSLHandshake(context); NSLog(@"SSLHandshake(): %d", result);NSLog(@"SSLHandshake(): [%s]- %@", (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
+		result = SSLHandshake(context);
+        NSLog(@"SSLHandshake(): %d", result);
+        NSLog(@"SSLHandshake(): [%s]- %s", (char *)GetMacOSStatusErrorString(result), (char *)GetMacOSStatusCommentString(result));
 	} while(result == errSSLWouldBlock);
-	
+	return result == errSecSuccess;
 }
 
-- (void)disconnect {
-	
-	if(self.certificate == nil) {
-		return;
-	}
-	
+- (void) disconnect {
+
 	// Define result variable.
 	OSStatus result;
 	
 	// Close SSL session.
-	result = SSLClose(context);// NSLog(@"SSLClose(): [%s]- %@", (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
+	result = SSLClose(context);// NSLog(@"SSLClose(): [%s]- %s", (char *)GetMacOSStatusErrorString(result),(char *)GetMacOSStatusCommentString(result));
 	
 	// Release identity.
 	CFRelease(identity);
@@ -154,38 +181,65 @@
 	close((int)socket);
 	
 	// Delete SSL context.
-	result = SSLDisposeContext(context);// NSLog(@"SSLDisposeContext(): [%s]- %@", (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
+	result = SSLDisposeContext(context);// NSLog(@"SSLDisposeContext(): [%s]- %s", (char *)GetMacOSStatusErrorString(result),(char *)GetMacOSStatusCommentString(result));
 	
 }
 
 #pragma mark IBAction
 
+
+- (IBAction)reset:(id)sender {
+    [self initNewNotification];
+}
+
+- (IBAction)add:(id)sender {
+    if ([self.apnsList containsObject:self.currentNotification])
+        return;
+    [self.apnsList addObject:self.currentNotification];
+    [self.apnsTableView reloadData];
+}
+
+- (IBAction)remove:(id)sender {
+    [self.apnsList removeObject:self.currentNotification];
+    [self.apnsTableView reloadData];
+    if (self.apnsTableView.selectedRow > -1 && self.apnsTableView.selectedRow < [self.apnsList count])
+        self.currentNotification = [self.apnsList objectAtIndex:self.apnsTableView.selectedRow];
+    else
+        [self initNewNotification];
+}
+
+- (IBAction)save:(id)sender {
+    NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+    NSMutableArray* data = [[NSMutableArray alloc] initWithCapacity:[self.apnsList count]];
+    for (APNSModel* m in self.apnsList)
+        [data addObject:m.apnsDictionary];
+    [ud setObject:data forKey:kAPNSListKey];
+    [data release];
+    [ud synchronize];
+}
+
+- (IBAction)preview:(id)sender {
+    [self updatePayloadPreview];
+}
+
 - (IBAction)push:(id)sender {
-	
-	if(! self.certificate) {
-        NSString* message = @"you need the APNS Certificate for the app to work";
-		NSLog(@"%@", message);
-        NSAlert *alert = [[[NSAlert alloc] init] autorelease];
-        [alert setMessageText:message];
-        [alert beginSheetModalForWindow:window
-                          modalDelegate:self
-                         didEndSelector:nil
-                            contextInfo:nil];
-		return;
-	}
-	
+    if (![self checkFormData])
+        return;
+	if (![self connect])
+        return [self displayMessage:@"SSL Fail"];
+
+    NSString* payload = self.currentNotification.payload;
 	// Validate input.
-	if(self.deviceToken == nil || self.payload == nil) {
+	if (payload == nil)
 		return;
-	}
-    else if(![self.deviceToken rangeOfString:@" "].length)
+    if (![self.currentNotification.deviceToken rangeOfString:@" "].length)
     {
         //put in spaces in device token
-        NSMutableString* tempString =  [NSMutableString stringWithString:self.deviceToken];
+        NSMutableString* tempString =  [NSMutableString stringWithString:self.currentNotification.deviceToken];
         int offset = 0;
-        for(int i = 0; i < tempString.length; i++)
+        for (int i = 0; i < tempString.length; i++)
         {
-            if(i%8 == 0 && i != 0 && i+offset < tempString.length-1)
+            if (i%8 == 0 && i != 0 && i+offset < tempString.length-1)
             {
                 //NSLog(@"i = %d + offset[%d] = %d", i, offset, i+offset);
                 [tempString insertString:@" " atIndex:i+offset];
@@ -193,23 +247,23 @@
             }
         }
         NSLog(@" device token string after adding spaces = '%@'", tempString);
-        self.deviceToken = tempString;
+        self.currentNotification.deviceToken = tempString;
     }
 	
 	// Convert string into device token data.
-	NSMutableData *deviceToken = [NSMutableData data];
+	NSMutableData *deviceTokenData = [NSMutableData data];
 	unsigned value;
-	NSScanner *scanner = [NSScanner scannerWithString:self.deviceToken];
+	NSScanner *scanner = [NSScanner scannerWithString:self.currentNotification.deviceToken];
 	while(![scanner isAtEnd]) {
 		[scanner scanHexInt:&value];
         //NSLog(@"scanned value %x", value);
 		value = htonl(value);
-		[deviceToken appendBytes:&value length:sizeof(value)];
+		[deviceTokenData appendBytes:&value length:sizeof(value)];
 	}
-	NSLog(@"device token data %@, length = %ld", deviceToken, deviceToken.length);
+	NSLog(@"device token data %@, length = %ld", deviceTokenData, deviceTokenData.length);
 	// Create C input variables.
-	char *deviceTokenBinary = (char *)[deviceToken bytes];
-	char *payloadBinary = (char *)[self.payload UTF8String];
+	char *deviceTokenBinary = (char *)[deviceTokenData bytes];
+	char *payloadBinary = (char *)[payload UTF8String];
 	size_t payloadLength = strlen(payloadBinary);
 	
 	// Define some variables.
@@ -235,8 +289,29 @@
 	// Send message over SSL.
 	size_t processed = 0;
 	OSStatus result = SSLWrite(context, &message, (pointer - message), &processed);// NSLog(@"SSLWrite(): %d %d", result, processed);
-	NSLog(@"SSLWrite(): [%s]- %@", (char *)GetMacOSStatusErrorString(result),[NSString stringWithUTF8String:(char *) GetMacOSStatusCommentString(result)] );
+	NSLog(@"SSLWrite(): [%s]- %s", (char *)GetMacOSStatusErrorString(result), (char *)GetMacOSStatusCommentString(result));
     NSLog(@"SSLWrite(): %d %ld", result, processed);
+    [self disconnect];
+}
+
+
+#pragma mark TableViewDataSource
+
+- (NSInteger) numberOfRowsInTableView:(NSTableView *)tableView {
+    return [self.apnsList count];
+}
+
+- (id) tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
+    if (row < 0 || row >= [self.apnsList count])
+        return nil;
+    APNSModel* notification = [self.apnsList objectAtIndex:row];
+    return [notification valueForKey:[tableColumn identifier]];
+}
+
+- (void) tableViewSelectionDidChange:(NSNotification *)notification {
+    NSTableView* tableView = notification.object;
+    if (tableView.selectedRow > -1 && tableView.selectedRow < [self.apnsList count])
+        self.currentNotification = [self.apnsList objectAtIndex:tableView.selectedRow];
 }
 
 @end
